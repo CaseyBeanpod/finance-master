@@ -150,6 +150,21 @@ td.num{text-align:right;color:var(--text2)}
   .main{padding:16px}
   .chart-grid{grid-template-columns:1fr}
 }
+/* ─ DRIVE SYNC ─ */
+.drive-section{padding:8px 8px 10px;border-top:1px solid var(--border)}
+.drive-status{padding:8px 10px;margin-bottom:6px;border-radius:var(--radius);font-size:11px;display:flex;align-items:center;gap:7px;border:1px solid var(--border)}
+.drive-status.signed-out{background:var(--bg3);color:var(--text3)}
+.drive-status.signed-in{background:var(--green-bg);border-color:var(--green);color:var(--green)}
+.drive-status.syncing{background:var(--amber-bg);border-color:var(--amber);color:var(--amber)}
+.drive-status.error{background:var(--red-bg);border-color:var(--red);color:var(--red)}
+.drive-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:currentColor}
+.drive-label{flex:1;line-height:1.3}
+.drive-btn{width:100%;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg3);color:var(--text2);cursor:pointer;font-size:11px;font-family:var(--font-ui);text-align:center;transition:all 0.15s;display:block;margin-bottom:3px}
+.drive-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.drive-btn.primary{background:var(--accent-bg);border-color:var(--accent);color:var(--accent)}
+.drive-btn.primary:hover{background:var(--accent);color:#fff}
+.sync-spinner{display:inline-block;width:9px;height:9px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.7s linear infinite;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -190,15 +205,15 @@ td.num{text-align:right;color:var(--text2)}
         Charts
       </button>
     </nav>
-    <div style="padding:12px 8px;border-top:1px solid var(--border)">
-      <button class="nav-item" onclick="exportData()" style="font-size:12px">
-        <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><polyline points="7 10 12 15 17 10" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="15" x2="12" y2="3" stroke-width="1.5" stroke-linecap="round"/></svg>
-        Export Data
-      </button>
-      <button class="nav-item" onclick="importData()" style="font-size:12px">
-        <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><polyline points="7 10 12 5 17 10" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="5" x2="12" y2="15" stroke-width="1.5" stroke-linecap="round"/></svg>
-        Import Data
-      </button>
+    <div class="drive-section">
+      <div class="drive-status signed-out" id="driveStatus">
+        <span class="drive-dot"></span>
+        <span class="drive-label" id="driveStatusText">Not connected</span>
+      </div>
+      <button class="drive-btn primary" id="driveSignInBtn" onclick="driveSignIn()">☁ Connect Google Drive</button>
+      <button class="drive-btn" id="driveSignOutBtn" style="display:none" onclick="driveSignOut()">Sign out of Drive</button>
+      <button class="drive-btn" onclick="exportData()" title="Download all data as a JSON file">↓ Backup to file</button>
+      <button class="drive-btn" onclick="importData()" title="Restore from a JSON backup file">↑ Restore from file</button>
       <input type="file" id="importFile" accept=".json" style="display:none" onchange="handleImportFile(event)">
     </div>
   </aside>
@@ -676,6 +691,7 @@ function saveMonth() {
   localStorage.setItem(monthKey(), JSON.stringify(data));
   saveTemplate();
   trackYearIndex();
+  driveSaveAll();
   const f = document.getElementById('saveFlash');
   f.classList.add('show');
   setTimeout(() => f.classList.remove('show'), 2000);
@@ -1383,6 +1399,153 @@ document.addEventListener('click', (e) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  GOOGLE DRIVE SYNC
+// ═══════════════════════════════════════════════════════════════════════════
+// Paste your Client ID from Google Cloud Console below:
+const GAPI_CLIENT_ID = '958803210621-m5h459amisa0bhha7d05150jjbudjbf5.apps.googleusercontent.com';
+const GAPI_SCOPES    = 'https://www.googleapis.com/auth/drive.appdata';
+const DRIVE_FILE     = 'family-finance-data.json';
+
+let driveAccessToken = null;
+let driveFileId      = null;
+let _tokenClient     = null;
+
+function driveInit() {
+  const gisScript = document.createElement('script');
+  gisScript.src = 'https://accounts.google.com/gsi/client';
+  gisScript.onload = () => {
+    _tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GAPI_CLIENT_ID,
+      scope: GAPI_SCOPES,
+      callback: _onTokenResponse
+    });
+    // Try silent restore from session
+    const saved = sessionStorage.getItem('ff_drive_token');
+    if (saved) {
+      try {
+        const t = JSON.parse(saved);
+        if (Date.now() < t.expires) {
+          driveAccessToken = t.access_token;
+          _afterSignIn();
+          return;
+        }
+      } catch(e) {}
+    }
+    driveStatusUpdate('signed-out', 'Not connected');
+  };
+  document.head.appendChild(gisScript);
+}
+
+function driveSignIn() {
+  if (!_tokenClient) { alert('Google auth is still loading — please try again in a moment.'); return; }
+  _tokenClient.requestAccessToken({ prompt: 'consent' });
+}
+
+function driveSignOut() {
+  if (driveAccessToken) google.accounts.oauth2.revoke(driveAccessToken);
+  driveAccessToken = null;
+  driveFileId = null;
+  sessionStorage.removeItem('ff_drive_token');
+  document.getElementById('driveSignInBtn').style.display = '';
+  document.getElementById('driveSignOutBtn').style.display = 'none';
+  driveStatusUpdate('signed-out', 'Not connected');
+}
+
+function _onTokenResponse(resp) {
+  if (resp.error) { driveStatusUpdate('error', 'Auth failed'); return; }
+  driveAccessToken = resp.access_token;
+  sessionStorage.setItem('ff_drive_token', JSON.stringify({
+    access_token: resp.access_token,
+    expires: Date.now() + (resp.expires_in - 60) * 1000
+  }));
+  _afterSignIn();
+}
+
+async function _afterSignIn() {
+  document.getElementById('driveSignInBtn').style.display = 'none';
+  document.getElementById('driveSignOutBtn').style.display = '';
+  driveStatusUpdate('syncing', 'Loading from Drive…');
+  try {
+    await driveLoadAll();
+    driveStatusUpdate('signed-in', 'Synced with Drive');
+  } catch(e) {
+    driveStatusUpdate('error', 'Load failed — using local data');
+    console.error('Drive load error:', e);
+  }
+}
+
+function driveStatusUpdate(state, text) {
+  const el = document.getElementById('driveStatus');
+  const tx = document.getElementById('driveStatusText');
+  if (!el) return;
+  el.className = 'drive-status ' + state;
+  tx.innerHTML = (state === 'syncing' ? '<span class="sync-spinner"></span> ' : '') + text;
+}
+
+async function _driveReq(method, url, body, contentType) {
+  const headers = { 'Authorization': 'Bearer ' + driveAccessToken };
+  if (contentType) headers['Content-Type'] = contentType;
+  const res = await fetch(url, { method, headers, body });
+  if (!res.ok) throw new Error('Drive API ' + res.status + ': ' + await res.text());
+  const ct = res.headers.get('content-type') || '';
+  return ct.includes('application/json') ? res.json() : res.text();
+}
+
+async function _findOrCreateFile() {
+  if (driveFileId) return driveFileId;
+  const q = encodeURIComponent("name='" + DRIVE_FILE + "'");
+  const list = await _driveReq('GET',
+    'https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=' + q + '&fields=files(id,name)');
+  if (list.files && list.files.length > 0) { driveFileId = list.files[0].id; return driveFileId; }
+  const meta = JSON.stringify({ name: DRIVE_FILE, parents: ['appDataFolder'] });
+  const content = JSON.stringify({ version: 1, data: {} });
+  const boundary = 'ff_boundary_xyz';
+  const body = '--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + meta +
+               '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + content +
+               '\r\n--' + boundary + '--';
+  const created = await _driveReq('POST',
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+    body, 'multipart/related; boundary=' + boundary);
+  driveFileId = created.id;
+  return driveFileId;
+}
+
+async function driveLoadAll() {
+  const fid = await _findOrCreateFile();
+  const raw = await _driveReq('GET', 'https://www.googleapis.com/drive/v3/files/' + fid + '?alt=media');
+  const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  const data = obj.version === 1 ? obj.data : obj;
+  Object.entries(data).forEach(([k, v]) => {
+    if (k.startsWith('ff_')) localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
+  });
+  loadMonth();
+}
+
+async function driveSaveAll() {
+  if (!driveAccessToken) return;
+  driveStatusUpdate('syncing', 'Saving…');
+  try {
+    const fid = await _findOrCreateFile();
+    const data = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ff_')) {
+        try { data[k] = JSON.parse(localStorage.getItem(k)); } catch(e) { data[k] = localStorage.getItem(k); }
+      }
+    }
+    await _driveReq('PATCH',
+      'https://www.googleapis.com/upload/drive/v3/files/' + fid + '?uploadType=media',
+      JSON.stringify({ version: 1, saved: new Date().toISOString(), data }),
+      'application/json');
+    const now = new Date();
+    driveStatusUpdate('signed-in', 'Saved · ' + now.getHours() + ':' + String(now.getMinutes()).padStart(2,'0'));
+  } catch(e) {
+    driveStatusUpdate('error', 'Save failed — kept locally');
+    console.error('Drive save error:', e);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  INIT
 // ═══════════════════════════════════════════════════════════════════════════
 (function init() {
@@ -1390,6 +1553,7 @@ document.addEventListener('click', (e) => {
   document.getElementById('monthSel').value = now.getMonth() + 1;
   document.getElementById('yearSel').value  = now.getFullYear();
   loadMonth();
+  driveInit();
 })();
 </script>
 <!-- TALLY POPOVER -->
