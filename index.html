@@ -1399,12 +1399,6 @@ function openTally(sec, idx, btn) {
   const row = sections[sec][idx];
   const pop = document.getElementById('tallyPop');
   const inp = document.getElementById('tallyPopInput');
-  // Position popover near the button
-  const rect = btn.getBoundingClientRect();
-  const top = rect.bottom + 6;
-  const left = Math.min(rect.left - 120, window.innerWidth - 230);
-  pop.style.top  = top + 'px';
-  pop.style.left = Math.max(8, left) + 'px';
   document.getElementById('tallyPopTitle').textContent = row.label || 'Add to total';
   const cur = parseFloat(document.querySelector(`#${sec}-tbody tr[data-idx="${idx}"] input[data-field=value]`)?.value) || 0;
   document.getElementById('tallyPopCurrent').textContent = 'Running total: ' + fmt(cur);
@@ -1415,7 +1409,19 @@ function openTally(sec, idx, btn) {
     ? hist.map(e=>`<div><span>${e.date}</span><span>${fmt(e.amount)}</span></div>`).join('')
     : '';
   inp.value = '';
+  // Reveal offscreen first so we can measure the popover's true size, then keep it fully on-screen
+  pop.style.visibility = 'hidden';
   pop.classList.add('show');
+  const rect = btn.getBoundingClientRect();
+  const gap = 8;
+  const popW = pop.offsetWidth, popH = pop.offsetHeight;
+  let left = Math.min(rect.left - 120, window.innerWidth - popW - gap);
+  left = Math.max(gap, left);
+  let top = rect.bottom + 6;
+  if (top + popH > window.innerHeight - gap) top = Math.max(gap, rect.top - popH - 6);
+  pop.style.left = left + 'px';
+  pop.style.top  = top + 'px';
+  pop.style.visibility = '';
   setTimeout(() => inp.focus(), 50);
 }
 
